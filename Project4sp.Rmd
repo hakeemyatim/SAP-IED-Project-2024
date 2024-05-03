@@ -1,0 +1,337 @@
+---
+title: "Project4sp"
+output: html_document
+date: "2024-04-27"
+---
+
+```{r}
+library(dplyr)
+library(caret)
+library(gbm)
+library(pROC)
+
+#Load datasets
+unexploded <- read.csv("unexploded_watchlist.csv")
+exploded <- read.csv("exploded_watchlist.csv")
+background <- read.csv("background_data.csv")
+query_1 <- read.csv("query_1.csv")
+query_2 <- read.csv("query_2.csv")
+query_3 <- read.csv("query_3.csv")
+query_4 <- read.csv("query_4.csv")
+query_5 <- read.csv("query_5.csv")
+query_6 <- read.csv("query_6.csv")
+query_7 <- read.csv("query_7.csv")
+query_8 <- read.csv("query_8.csv")
+query_9 <- read.csv("query_9.csv")
+query_10 <- read.csv("query_10.csv")
+query_11 <- read.csv("query_11.csv")
+query_12 <- read.csv("query_12.csv")
+
+# Combine exploded and unexploded datasets
+exploded$Exploded <- TRUE
+unexploded$Exploded <- FALSE
+combined_data <- rbind(exploded, unexploded)
+
+exploded
+unexploded
+combined_data
+
+
+```
+
+
+```{r}
+# Select relevant numeric variables
+numeric_features <- c("Area", "Perim.", "Major", "Minor", "Circ.", "AR", "Round", "Solidity")
+
+# Assuming combined_data contains the entire dataset
+# Split data into training and testing sets
+set.seed(123)  # for reproducibility
+trainIndex <- createDataPartition(combined_data$Exploded, p = 0.7, list = FALSE, times = 1)
+train_data <- combined_data[trainIndex, ]
+test_data <- combined_data[-trainIndex, ]
+
+# Train GBM model, excluding 'Brand', 'Shape', and other non-numeric variables
+gbm_model <- gbm(Exploded ~ ., 
+                 data = train_data[, c("Exploded", numeric_features)],
+                 distribution = "bernoulli", n.trees = 100, interaction.depth = 4, shrinkage = 0.1)
+# Make predictions on test data
+gbm_preds <- predict(gbm_model, newdata = test_data, n.trees = 100, type = "response")
+
+# Convert predicted probabilities to class labels
+gbm_preds_class <- ifelse(gbm_preds > 0.5, TRUE, FALSE)
+
+# Calculate accuracy
+gbm_accuracy <- mean(gbm_preds_class == test_data$Exploded)
+print(paste("GBM Accuracy:", gbm_accuracy))
+```
+
+```{r}
+# Assuming combined_data contains the entire dataset including background data
+
+# Make predictions on the background data
+background_preds <- predict(gbm_model, newdata = background[, numeric_features], n.trees = 100, type = "response")
+
+# Convert predicted probabilities to class labels
+predicted_exploded <- ifelse(background_preds > 0.5, TRUE, FALSE)
+
+# Update the Exploded column based on the prediction
+background$Exploded <- predicted_exploded
+
+# View the updated background dataset
+background
+```
+
+
+```{r}
+# Combine the combined_data with the background dataset
+final_combined_data <- rbind(combined_data, background)
+
+# View the final combined dataset
+head(final_combined_data)
+
+# Filter the background dataset to include only exploded particles
+exploded_combined <- final_combined_data[final_combined_data$Exploded == TRUE, ]
+
+# Filter the background dataset to include only exploded particles
+unexploded_combined <- final_combined_data[final_combined_data$Exploded == FALSE, ]
+
+exploded_combined
+
+unexploded_combined
+
+
+```
+
+```{r}
+# Select relevant numeric variables
+four_features <- c("Area", "Perim.", "Major", "Minor")
+
+# Remove brands with only one entry
+brand_counts <- table(exploded_combined$Brand)
+single_entry_brands <- names(brand_counts)[brand_counts == 1]
+exploded_combined_filtered <- exploded_combined[!exploded_combined$Brand %in% single_entry_brands, ]
+
+# Split data into training and testing sets
+set.seed(123)  # for reproducibility
+train_index <- createDataPartition(exploded_combined_filtered$Brand, p = 0.8, list = FALSE)
+train_exploded <- exploded_combined_filtered[train_index, c(four_features, "Brand")]
+test_exploded <- exploded_combined_filtered[-train_index, c(four_features, "Brand")]
+
+# Train Random Forest model for exploded data
+set.seed(123)  # for reproducibility
+random_forest_exploded <- train(
+  Brand ~ ., 
+  data = train_exploded,
+  method = "rf",  # GBM method
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+)
+
+# View model results
+print(random_forest_exploded)
+
+# Evaluate model performance on the testing set
+test_predictions <- predict(random_forest_exploded, newdata = test_exploded)
+accuracy <- mean(test_predictions == test_exploded$Brand)
+print(paste("Accuracy:", accuracy))
+
+# Modify the file paths accordingly
+output_dir <- "~/Downloads/"
+
+# Define the query datasets
+queries <- list(query_3, query_9, query_11, query_12)
+
+# Define the corresponding features for each query
+query_features <- lapply(queries, function(query) query[, c(four_features)])
+
+# Initialize a list to store the results
+predicted_queries <- list()
+
+# Iterate over each query dataset and make predictions
+for (i in seq_along(queries)) {
+  # Make predictions using the trained model
+  predictions <- predict(gbm_exploded, newdata = query_features[[i]])
+  
+  # Add predicted brands as a new column in the query dataset
+  queries[[i]]$Predicted_Brand <- predictions
+  
+  # Store the updated query dataset with predicted brands
+  predicted_queries[[i]] <- queries[[i]]
+  
+  # Write the predictions to a CSV file
+  write.csv(queries[[i]], file = paste0(output_dir, "query_", c(3, 9, 11, 12)[i], "_predicted_exploded.csv"), row.names = FALSE)
+}
+
+# View the query datasets with predicted brands
+predicted_queries
+
+```
+
+
+```{r}
+# Load required libraries
+library(caret)
+library(gbm)
+
+# Select relevant numeric variables
+numeric_features <- c("Area", "Perim.", "Major", "Minor")
+
+# Remove brands with only one entry
+brand_counts_unexploded <- table(unexploded$Brand)
+single_entry_brands_unexploded <- names(brand_counts_unexploded)[brand_counts_unexploded == 1]
+unexploded_filtered <- unexploded[!unexploded$Brand %in% single_entry_brands_unexploded, ]
+
+# Split data into training and testing sets
+set.seed(123)  # for reproducibility
+train_index_unexploded <- createDataPartition(unexploded_filtered$Brand, p = 0.8, list = FALSE)
+train_unexploded <- unexploded_filtered[train_index_unexploded, c(numeric_features, "Brand")]
+test_unexploded <- unexploded_filtered[-train_index_unexploded, c(numeric_features, "Brand")]
+
+# Train GBM model for unexploded data
+set.seed(123)  # for reproducibility
+gbm_unexploded <- train(
+  Brand ~ ., 
+  data = train_unexploded,
+  method = "gbm",  # GBM method
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+)
+
+# View model results
+print(gbm_unexploded)
+
+# Evaluate model performance on the testing set
+test_predictions <- predict(gbm_unexploded, newdata = test_unexploded)
+accuracy <- mean(test_predictions == test_unexploded$Brand)
+print(paste("Accuracy:", accuracy))
+
+# Modify the file paths accordingly
+output_dir <- "~/Downloads/"
+
+# Define the query datasets
+queries <- list(query_1, query_2, query_4, query_5, query_6, query_7, query_8, query_10)
+
+# Define the corresponding features for each query
+query_features <- lapply(queries, function(query) query[, c(numeric_features)])
+
+# Initialize a list to store the results
+predicted_queries <- list()
+
+# Iterate over each query dataset and make predictions
+for (i in seq_along(queries)) {
+  # Make predictions using the trained model
+  predictions <- predict(gbm_unexploded, newdata = query_features[[i]])
+  
+  # Add predicted brands as a new column in the query dataset
+  queries[[i]]$Predicted_Brand <- predictions
+  
+  # Store the updated query dataset with predicted brands
+  predicted_queries[[i]] <- queries[[i]]
+  
+  # Write the predictions to a CSV file
+  write.csv(queries[[i]], file = paste0(output_dir, "query_", i, "_predicted.csv"), row.names = FALSE)
+}
+
+# View the query datasets with predicted brands
+predicted_queries
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Model does not work
+# Select relevant numeric variables
+numeric_features <- c("Area", "Perim.", "Major", "Minor")
+
+# Split data into training and testing sets
+set.seed(123)  # for reproducibility
+train_index <- createDataPartition(unexploded_combined$Brand, p = 0.8, list = FALSE)
+train_unexploded <- unexploded_combined[train_index, c(numeric_features, "Brand")]
+test_unexploded <- unexploded_combined[-train_index, c(numeric_features, "Brand")]
+
+# Train GBM model for unexploded data
+set.seed(123)  # for reproducibility
+gbm_unexploded <- train(
+  Brand ~ ., 
+  data = train_unexploded,
+  method = "gbm",  # GBM method
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+)
+
+# View model results
+print(gbm_unexploded)
+
+# Evaluate model performance on the testing set
+test_predictions <- predict(gbm_unexploded, newdata = test_unexploded)
+accuracy <- mean(test_predictions == test_unexploded$Brand)
+print(paste("Accuracy:", accuracy))
+
+# Extract the relevant features from Query 1 dataset
+query1_features <- query_1[, c(numeric_features)]
+
+# Make predictions using the trained model
+predictions <- predict(gbm_unexploded, newdata = query1_features)
+
+# Add predicted brands as a new column in the Query 1 dataset
+query_1$Predicted_Brand <- predictions
+
+# View the Query 1 dataset with predicted brands
+print(query_1)
+
+
+```
+
+
+```{r}
+# Model does not work
+
+
+# Select relevant numeric variables
+four_features <- c("Area", "Perim.", "Major", "Minor")
+
+# Split data into training and testing sets
+train_index <- createDataPartition(exploded_combined$Brand, p = 0.8, list = FALSE)
+train_exploded <- exploded_combined[train_index, c(four_features, "Brand")]
+test_exploded <- exploded_combined[-train_index, c(four_features, "Brand")]
+
+# Train Random Forest model for exploded data
+set.seed(123)  # for reproducibility
+gbm_exploded <- train(
+  Brand ~ ., 
+  data = train_exploded,
+  method = "rf",  # Random Forest method
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+)
+
+# View model results
+print(random_forest_exploded)
+
+# Evaluate model performance on the testing set
+test_predictions <- predict(random_forest_exploded, newdata = test_exploded)
+accuracy <- mean(test_predictions == test_exploded$Brand)
+print(paste("Accuracy:", accuracy))
+
+# Extract the relevant features from the query dataset
+query_features <- query_3[, c(four_features)]
+
+# Make predictions using the trained model
+predictions <- predict(random_forest_exploded, newdata = query_features)
+
+# Add predicted brands as a new column in the query dataset
+query_3$Predicted_Brand <- predictions
+
+# View the query dataset with predicted brands
+query_3
+
+```
+
+

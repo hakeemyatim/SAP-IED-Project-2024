@@ -1,0 +1,224 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-04-19"
+---
+
+```{r}
+library(dplyr)
+library(caret)
+library(gbm)
+library(pROC)
+
+#Load datasets
+unexploded <- read.csv("unexploded_watchlist.csv")
+exploded <- read.csv("exploded_watchlist.csv")
+background <- read.csv("background_data.csv")
+query_1 <- read.csv("query_1.csv")
+query_2 <- read.csv("query_2.csv")
+query_3 <- read.csv("query_3.csv")
+query_4 <- read.csv("query_4.csv")
+query_5 <- read.csv("query_5.csv")
+query_6 <- read.csv("query_6.csv")
+query_7 <- read.csv("query_7.csv")
+query_8 <- read.csv("query_8.csv")
+query_9 <- read.csv("query_9.csv")
+query_10 <- read.csv("query_10.csv")
+query_11 <- read.csv("query_11.csv")
+query_12 <- read.csv("query_12.csv")
+
+# Combine exploded and unexploded datasets
+exploded$Exploded <- TRUE
+unexploded$Exploded <- FALSE
+combined_data <- rbind(exploded, unexploded)
+
+combined_data
+```
+
+```{r}
+# Compare particles unexploded vs exploded
+
+# Calculate the median size of exploded particles
+exploded_median_size <- median(exploded$Area)
+
+# Calculate the median size of unexploded particles
+unexploded_median_size <- median(unexploded$Area)
+
+# Print the median sizes
+print(paste("Median Size of Exploded Particles:", exploded_median_size))
+print(paste("Median Size of Unexploded Particles:", unexploded_median_size))
+
+# Extract areas of exploded and unexploded particles
+areas_exploded <- exploded$Area
+areas_unexploded <- unexploded$Area
+
+# Perform two-sample t-test
+t_test_result <- t.test(areas_exploded, areas_unexploded)
+
+# Print the results
+print(t_test_result)
+
+```
+
+# In conclusion, unexploded particles tend to be larger than exploded particles. 
+
+```{r}
+# Select relevant numeric variables
+numeric_features <- c("Area", "Perim.", "Major", "Minor", "Circ.", "AR", "Round", "Solidity")
+
+# Assuming combined_data contains the entire dataset
+# Split data into training and testing sets
+set.seed(123)  # for reproducibility
+trainIndex <- createDataPartition(combined_data$Exploded, p = 0.7, list = FALSE, times = 1)
+train_data <- combined_data[trainIndex, ]
+test_data <- combined_data[-trainIndex, ]
+
+# Train GBM model, excluding 'Brand', 'Shape', and other non-numeric variables
+gbm_model <- gbm(Exploded ~ ., 
+                 data = train_data[, c("Exploded", numeric_features)],
+                 distribution = "bernoulli", n.trees = 100, interaction.depth = 4, shrinkage = 0.1)
+# Make predictions on test data
+gbm_preds <- predict(gbm_model, newdata = test_data, n.trees = 100, type = "response")
+
+# Convert predicted probabilities to class labels
+gbm_preds_class <- ifelse(gbm_preds > 0.5, TRUE, FALSE)
+
+# Calculate accuracy
+gbm_accuracy <- mean(gbm_preds_class == test_data$Exploded)
+print(paste("GBM Accuracy:", gbm_accuracy))
+```
+```{r}
+library(caret)
+# Define cross-validation settings
+control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Convert 'Exploded' column to factor
+train_data$Exploded <- factor(train_data$Exploded, levels = c(FALSE, TRUE))
+
+# Train GBM model using cross-validation
+gbm_model_cv <- train(Exploded ~ ., data = train_data[, c("Exploded", numeric_features)],
+                      trControl = control, verbose = FALSE)
+
+# Print cross-validated performance metrics
+print(gbm_model_cv)
+```
+
+
+```{r}
+# Calculate precision, recall, and F1-score using the confusion matrix
+confusion_matrix <- confusionMatrix(factor(test_data$Exploded, levels = c(FALSE, TRUE)), 
+                                    factor(gbm_preds_class, levels = c(FALSE, TRUE)))
+
+# Access precision, recall, and F1-score from the confusion matrix
+precision <- confusion_matrix$byClass["Pos Pred Value"]
+recall <- confusion_matrix$byClass["Sensitivity"]
+f1_score <- confusion_matrix$byClass["F1"]
+
+# Print precision, recall, and F1-score
+print(paste("Precision:", precision))
+print(paste("Recall:", recall))
+print(paste("F1 Score:", f1_score))
+
+# Compute ROC curve
+roc_curve <- roc(test_data$Exploded, gbm_preds)
+
+# Plot ROC curve
+plot(roc_curve, main = "ROC Curve for GBM Model", col = "blue")
+
+# Calculate AUC
+auc_score <- auc(roc_curve)
+print(paste("AUC:", auc_score))
+
+
+# Print the confusion matrix
+confusion_matrix$table
+
+```
+
+
+```{r}
+# Calculate ROC curve
+roc_curve <- roc(test_data$Exploded, gbm_preds)
+
+# Get thresholds for different levels of sensitivity and specificity
+thresholds <- coords(roc_curve, x = "best", input = "sensitivity", ret = "threshold", transpose = TRUE)
+
+# Print the thresholds
+print(thresholds)
+
+
+# Define a function to predict particle size
+predict_particle_size <- function(area, perimeter, major, minor, circ, ar, roundness, solidity, threshold) {
+  # Create a data frame with particle features
+  particle_data <- data.frame(Area = area, Perim. = perimeter, Major = major, Minor = minor,
+                              Circ. = circ, AR = ar, Round = roundness, Solidity = solidity)
+  
+  # Use the trained model to predict size (probability)
+  predicted_prob <- predict(gbm_model, newdata = particle_data, n.trees = 100, type = "response")
+  
+  # Convert probability to class label based on threshold
+  predicted_label <- ifelse(predicted_prob >= threshold, "Large", "Small")
+  
+  return(predicted_label)
+}
+
+# Example usage:
+area <- 1875667.8  # Example area
+perimeter <- 5764.154  # Example perimeter
+major <- 1925.449  # Example major axis
+minor <- 1240.321  # Example minor axis
+circ <- 0.709  # Example circularity
+ar <- 1.552  # Example aspect ratio
+roundness <- 0.644  # Example roundness
+solidity <- 0.949  # Example solidity
+threshold <- 0.01121103   # Example threshold (you can use your chosen threshold here)
+
+predicted_label <- predict_particle_size(area, perimeter, major, minor, circ, ar, roundness, solidity, threshold)
+print(predicted_label)
+
+# Example 2
+area <-381147.21
+perimeter <- 2307.725 
+major <- 696.9970  
+minor <- 696.2610
+circ <- 0.8990
+ar <- 1.0010  
+roundness <- 0.9990  
+solidity <- 0.9830
+threshold <- 0.01121103
+
+predicted_label <- predict_particle_size(area, perimeter, major, minor, circ, ar, roundness, solidity, threshold)
+print(predicted_label)
+```
+```{r}
+# Define a function to calculate precision, recall, and F1-score for a given threshold
+calculate_metrics <- function(pred_probs, true_labels, threshold) {
+  # Convert predicted probabilities to binary predictions based on the threshold
+  binary_preds <- ifelse(pred_probs > threshold, TRUE, FALSE)
+  
+  # Calculate confusion matrix
+  confusion_matrix <- table(true_labels, binary_preds)
+  
+  # Calculate precision, recall, and F1-score
+  precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+  recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+  f1_score <- 2 * precision * recall / (precision + recall)
+  
+  # Calculate accuracy
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  
+  # Return metrics
+  return(list(accuracy = accuracy, precision = precision, recall = recall, f1_score = f1_score))
+}
+
+# Example usage:
+threshold <- 0.01121103  # Example threshold
+metrics <- calculate_metrics(gbm_preds, test_data$Exploded, threshold)
+print(metrics)
+```
+
+
+
+
+
+
